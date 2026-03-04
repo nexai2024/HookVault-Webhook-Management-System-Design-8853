@@ -1,0 +1,55 @@
+// This is your Prisma schema file for HookVault
+// Learn more: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Vault {
+  id          String         @id @default(cuid())
+  name        String
+  targetUrl   String         // User's destination URL
+  secret      String         // For verifying payload origin if needed
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+  webhooks    WebhookEntry[]
+}
+
+model WebhookEntry {
+  id          String            @id @default(cuid())
+  vaultId     String
+  vault       Vault             @relation(fields: [vaultId], references: [id])
+  idempotency String            @unique // X-HookVault-ID
+  payload     Json
+  headers     Json
+  status      DeliveryStatus    @default(PENDING)
+  createdAt   DateTime          @default(now())
+  attempts    DeliveryAttempt[]
+
+  @@index([vaultId, status])
+}
+
+model DeliveryAttempt {
+  id           String       @id @default(cuid())
+  webhookId    String
+  webhook      WebhookEntry @relation(fields: [webhookId], references: [id])
+  attemptNum   Int
+  responseCode Int?
+  responseBody String?
+  latencyMs    Int?
+  createdAt    DateTime     @default(now())
+
+  @@index([webhookId])
+}
+
+enum DeliveryStatus {
+  PENDING
+  SUCCESS
+  FAILED
+  DLQ
+}
