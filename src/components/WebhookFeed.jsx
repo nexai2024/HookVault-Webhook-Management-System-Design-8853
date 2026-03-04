@@ -3,6 +3,7 @@ import { formatDistanceToNow } from 'date-fns';
 import { cn } from '../utils/cn';
 import SafeIcon from '../common/SafeIcon';
 import * as FiIcons from 'react-icons/fi';
+import WebhookFilters from './WebhookFilters';
 
 const { FiCheckCircle, FiXCircle, FiClock, FiRefreshCw } = FiIcons;
 
@@ -23,7 +24,6 @@ const StatusBadge = ({ status }) => {
     PENDING: 'bg-amber-500/10 text-amber-400 border-amber-500/20',
     RETRIYING: 'bg-blue-500/10 text-blue-400 border-blue-500/20',
   };
-
   return (
     <span className={cn("px-2.5 py-0.5 rounded-full text-xs font-medium border", styles[status])}>
       {status}
@@ -31,7 +31,9 @@ const StatusBadge = ({ status }) => {
   );
 };
 
-export default function WebhookFeed({ webhooks, selectedId, onSelect }) {
+export default function WebhookFeed({ webhooks, selectedId, onSelect, filters, setFilters }) {
+  const sources = [...new Set(webhooks.map(h => h.source))];
+  
   return (
     <div className="flex-1 border-r border-slate-800 bg-slate-900/50 flex flex-col h-full overflow-hidden">
       <div className="p-4 border-b border-slate-800 flex justify-between items-center bg-slate-900">
@@ -44,45 +46,54 @@ export default function WebhookFeed({ webhooks, selectedId, onSelect }) {
           <span className="text-xs text-slate-400 font-medium tracking-wide border border-slate-800 px-2 py-1 rounded-md bg-slate-800/50">Listening</span>
         </div>
       </div>
-      
+
+      <WebhookFilters 
+        filters={filters} 
+        setFilters={setFilters} 
+        sources={sources}
+      />
+
       <div className="flex-1 overflow-y-auto overflow-x-hidden">
-        {webhooks.map((hook) => (
-          <div
-            key={hook.id}
-            onClick={() => onSelect(hook.id)}
-            className={cn(
-              "p-4 border-b border-slate-800/50 cursor-pointer transition-colors duration-200 hover:bg-slate-800/50",
-              selectedId === hook.id ? "bg-slate-800/80 border-l-2 border-l-indigo-500" : "border-l-2 border-l-transparent"
-            )}
-          >
-            <div className="flex justify-between items-start mb-2">
-              <div className="flex items-center gap-2">
-                <StatusIcon status={hook.status} />
-                <span className="font-mono text-sm text-slate-300 font-medium">/{hook.source}</span>
-              </div>
-              <span className="text-xs text-slate-500">
-                {formatDistanceToNow(new Date(hook.createdAt), { addSuffix: true })}
-              </span>
-            </div>
-            
-            <div className="flex justify-between items-center">
-              <div className="flex items-center gap-2">
-                <span className={cn(
-                  "text-[10px] font-bold px-1.5 py-0.5 rounded",
-                  hook.method === 'POST' ? "bg-blue-500/20 text-blue-400" :
-                  hook.method === 'GET' ? "bg-emerald-500/20 text-emerald-400" :
-                  "bg-slate-700 text-slate-300"
-                )}>
-                  {hook.method}
-                </span>
-                <span className="text-xs font-mono text-slate-500 truncate max-w-[150px]">
-                  {hook.id}
+        {webhooks.length > 0 ? (
+          webhooks.map((hook) => (
+            <div
+              key={hook.id}
+              onClick={() => onSelect(hook.id)}
+              className={cn(
+                "p-4 border-b border-slate-800/50 cursor-pointer transition-colors duration-200 hover:bg-slate-800/50",
+                selectedId === hook.id ? "bg-slate-800/80 border-l-2 border-l-indigo-500" : "border-l-2 border-l-transparent"
+              )}
+            >
+              <div className="flex justify-between items-start mb-2">
+                <div className="flex items-center gap-2">
+                  <StatusIcon status={hook.status} />
+                  <span className="font-mono text-sm text-slate-300 font-medium">/{hook.source}</span>
+                </div>
+                <span className="text-xs text-slate-500">
+                  {formatDistanceToNow(new Date(hook.createdAt), { addSuffix: true })}
                 </span>
               </div>
-              <StatusBadge status={hook.status} />
+              <div className="flex justify-between items-center">
+                <div className="flex items-center gap-2">
+                  <span className={cn(
+                    "text-[10px] font-bold px-1.5 py-0.5 rounded",
+                    hook.method === 'POST' ? "bg-blue-500/20 text-blue-400" : "bg-slate-700 text-slate-300"
+                  )}>
+                    {hook.method}
+                  </span>
+                  <span className="text-xs font-mono text-slate-500 truncate max-w-[150px]">
+                    {hook.id}
+                  </span>
+                </div>
+                <StatusBadge status={hook.status} />
+              </div>
             </div>
+          ))
+        ) : (
+          <div className="p-8 text-center text-slate-500">
+            <p className="text-sm">No webhooks match your filters.</p>
           </div>
-        ))}
+        )}
       </div>
     </div>
   );
