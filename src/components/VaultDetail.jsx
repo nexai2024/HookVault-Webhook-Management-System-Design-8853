@@ -1,25 +1,42 @@
 import React, { useState } from 'react';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
 import SafeIcon from '../common/SafeIcon';
 import * as FiIcons from 'react-icons/fi';
+import { updateVault } from '../lib/api';
 
 const { FiArrowLeft, FiSettings, FiActivity, FiShield, FiCopy, FiRefreshCw, FiTrash2, FiSave, FiLock, FiTerminal } = FiIcons;
 
-export default function VaultDetail({ vault, onBack, onUpdate }) {
+export default function VaultDetail({ vault, onBack }) {
   const [activeTab, setActiveTab] = useState('overview');
-  const [isRotating, setIsRotating] = useState(false);
+  const [revealedSecret, setRevealedSecret] = useState(null);
   const [settings, setSettings] = useState({
     name: vault.name,
     url: vault.url || vault.targetUrl,
   });
+  const queryClient = useQueryClient();
 
-  const rotateSecret = () => {
-    setIsRotating(true);
-    setTimeout(() => setIsRotating(false), 1200);
-  };
+  const updateMutation = useMutation({
+    mutationFn: ({ id, patch }) => updateVault(id, patch),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['vaults'] }),
+  });
+
+  const rotateMutation = useMutation({
+    mutationFn: () => updateVault(vault.id, { rotateSecret: true }),
+    onSuccess: (updated) => {
+      if (updated?.secret) setRevealedSecret(updated.secret);
+      queryClient.invalidateQueries({ queryKey: ['vaults'] });
+    },
+  });
+
+  const isRotating = rotateMutation.isPending;
+
+  const rotateSecret = () => rotateMutation.mutate();
 
   const handleSave = () => {
-    onUpdate({ ...vault, name: settings.name, url: settings.url, targetUrl: settings.url });
-    setActiveTab('overview');
+    updateMutation.mutate(
+      { id: vault.id, patch: { name: settings.name, targetUrl: settings.url } },
+      { onSuccess: () => setActiveTab('overview') },
+    );
   };
 
   return (
@@ -139,15 +156,26 @@ export default function VaultDetail({ vault, onBack, onUpdate }) {
                   <p className="text-sm text-slate-500">HMAC Key used to sign all outbound requests for this vault.</p>
                 </div>
               </div>
-              <div className="flex items-center gap-4 bg-black/60 border border-slate-800 rounded-xl p-5 mb-8">
-                <div className="flex-1 font-mono text-xs text-slate-600 tracking-[0.4em] select-none">
-                  ••••••••••••••••••••••••••••••••••••••••••••••••
+              <div className="flex items-center gap-4 bg-black/60 border border-slate-800 rounded-xl p-5 mb-3">
+                <div className="flex-1 font-mono text-xs text-slate-400 break-all select-all">
+                  {revealedSecret ? (
+                    revealedSecret
+                  ) : (
+                    <span className="text-slate-600 tracking-[0.4em] select-none">
+                      ••••••••••••••••••••••••••••••••••••••••••••••••
+                    </span>
+                  )}
                 </div>
-                <button onClick={rotateSecret} className="flex items-center gap-2 px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg text-xs font-bold transition-all border border-slate-700">
+                <button onClick={rotateSecret} disabled={isRotating} className="flex items-center gap-2 px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg text-xs font-bold transition-all border border-slate-700 disabled:opacity-50">
                   <SafeIcon icon={FiRefreshCw} className={isRotating ? "animate-spin" : ""} />
-                  Rotate Key
+                  {isRotating ? 'Rotating…' : 'Rotate Key'}
                 </button>
               </div>
+              {revealedSecret && (
+                <p className="text-xs text-amber-400/80 mb-8">
+                  Copy this secret now — it won’t be shown again.
+                </p>
+              )}
             </div>
           )}
         </div>

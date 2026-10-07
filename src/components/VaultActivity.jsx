@@ -1,7 +1,9 @@
 import React from 'react';
+import { useQuery } from '@tanstack/react-query';
 import SafeIcon from '../common/SafeIcon';
 import * as FiIcons from 'react-icons/fi';
 import { formatDistanceToNow } from 'date-fns';
+import { getVaultActivity } from '../lib/api';
 
 const { FiSettings, FiKey, FiActivity, FiAlertCircle, FiUser, FiArrowRight } = FiIcons;
 
@@ -16,41 +18,11 @@ const ActionIcon = ({ action }) => {
 };
 
 export default function VaultActivity({ vaultId, onClose }) {
-  // Mock activity data
-  const activities = [
-    {
-      id: 'act_1',
-      action: 'CONFIG_UPDATE',
-      actor: 'john@example.com',
-      time: new Date(Date.now() - 1000 * 60 * 45), // 45 mins ago
-      details: 'Updated target URL',
-      changes: { from: 'https://old-api.com', to: 'https://new-api.com' }
-    },
-    {
-      id: 'act_2',
-      action: 'SECRET_ROTATED',
-      actor: 'john@example.com',
-      time: new Date(Date.now() - 1000 * 60 * 60 * 3), // 3 hours ago
-      details: 'Rotated signing secret',
-      changes: null
-    },
-    {
-      id: 'act_3',
-      action: 'TRAFFIC_SPIKE',
-      actor: 'System',
-      time: new Date(Date.now() - 1000 * 60 * 60 * 24), // 1 day ago
-      details: 'Abnormal traffic detected: 500 req/sec',
-      changes: null
-    },
-    {
-      id: 'act_4',
-      action: 'STATUS_CHANGED',
-      actor: 'sarah@example.com',
-      time: new Date(Date.now() - 1000 * 60 * 60 * 24 * 2), // 2 days ago
-      details: 'Vault resumed',
-      changes: { from: 'PAUSED', to: 'ACTIVE' }
-    }
-  ];
+  const { data: activities = [], isLoading } = useQuery({
+    queryKey: ['vault-activity', vaultId],
+    queryFn: () => getVaultActivity(vaultId),
+    enabled: !!vaultId,
+  });
 
   return (
     <div className="flex flex-col h-full bg-[#0F1115] border-l border-slate-800 w-[450px] animate-in slide-in-from-right duration-300">
@@ -65,6 +37,12 @@ export default function VaultActivity({ vaultId, onClose }) {
       </div>
 
       <div className="flex-1 overflow-y-auto p-6 space-y-8">
+        {isLoading && (
+          <p className="text-center text-slate-500 text-sm">Loading activity…</p>
+        )}
+        {!isLoading && activities.length === 0 && (
+          <p className="text-center text-slate-600 text-sm italic">No activity recorded yet.</p>
+        )}
         {activities.map((item, index) => (
           <div key={item.id} className="relative flex gap-4">
             {/* Timeline Line */}

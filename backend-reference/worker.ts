@@ -1,99 +1,176 @@
 /**
- * Standalone BullMQ Worker Logic
- * Run this as a separate Node process: `node worker.js`
+ * Standalone BullMQ worker that performs outbound webhook delivery.
+ * Run as a separate process:  npm run worker
+ *
+ * Flow per job:
+ *   1. Load the WebhookEntry + its Vault.
+ *   2. Sign the payload with the vault's HMAC secret.
+ *   3. POST to the vault's target URL.
+ *   4. Record a DeliveryAttempt and update status.
+ * Retries (with exponential backoff) and the DLQ transition are driven by the
+ * queue config in lib/queue.ts and the `failed` handler below.
  */
-import { Worker, Job } from 'bullmq';
+import { Worker, Job, UnrecoverableError } from 'bullmq';
 import { redis } from './lib/redis';
 import { prisma } from './lib/prisma';
+import { signPayload, SIGNATURE_HEADER } from './lib/hmac';
+import { logVaultActivity } from './lib/activity';
+import { publishWebhookEvent } from './lib/events';
 
-// Mock Alert Function
-const sendAlert = async (entryId: string, vaultId: string) => {
-  console.error(`[ALERT] Webhook ${entryId} for vault ${vaultId} moved to DLQ after 5 retries.`);
-  // Implement Slack/Email notification here
+interface DeliveryJobData {
+  entryId: string;
+  vaultId: string;
+}
+
+// Mock alert hook - wire to Slack/email/PagerDuty in production.
+const sendAlert = async (entryId: string, vaultId: string): Promise<void> => {
+  console.error(
+    `[ALERT] Webhook ${entryId} for vault ${vaultId} moved to DLQ after exhausting retries.`,
+  );
 };
 
-const worker = new Worker('webhooks', async (job: Job) => {
-  const { entryId, vaultId, payload, headers } = job.data;
+const worker = new Worker<DeliveryJobData>(
+  'webhooks',
+  async (job: Job<DeliveryJobData>) => {
+    const { entryId } = job.data;
 
-  // 1. Fetch Vault configuration to get target URL
-  const vault = await prisma.vault.findUnique({ where: { id: vaultId } });
-  if (!vault) throw new Error(`Vault ${vaultId} not found`);
-
-  const startTime = Date.now();
-  let responseCode = null;
-  let responseBody = null;
-
-  try {
-    // 2. Attempt Delivery
-    const response = await fetch(vault.targetUrl, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-HookVault-Delivery': 'true',
-        // Forward safe headers if needed
-      },
-      body: JSON.stringify(payload)
+    // 1. Load the entry + vault (source of truth lives in the DB, not the job).
+    const entry = await prisma.webhookEntry.findUnique({
+      where: { id: entryId },
+      include: { vault: true },
     });
-
-    responseCode = response.status;
-    responseBody = await response.text().catch(() => 'Unreadable response body');
-    const latencyMs = Date.now() - startTime;
-
-    // 3. Log Attempt
-    await prisma.deliveryAttempt.create({
-      data: {
-        webhookId: entryId,
-        attemptNum: job.attemptsMade + 1,
-        responseCode,
-        responseBody: responseBody.substring(0, 1000), // truncate
-        latencyMs
-      }
-    });
-
-    if (!response.ok) {
-      throw new Error(`Target returned status ${responseCode}`);
+    if (!entry) {
+      // Nothing to deliver; don't retry a vanished record.
+      throw new UnrecoverableError(`WebhookEntry ${entryId} not found`);
+    }
+    if (!entry.vault) {
+      throw new UnrecoverableError(`Vault ${entry.vaultId} not found`);
     }
 
-    // 4. Mark Success
-    await prisma.webhookEntry.update({
-      where: { id: entryId },
-      data: { status: 'SUCCESS' }
-    });
+    const attemptNum = job.attemptsMade + 1;
+    const rawBody = JSON.stringify(entry.payload);
+    const { header: signature } = signPayload(entry.vault.secret, rawBody);
 
-  } catch (error: any) {
-    // If fetch failed completely (e.g. network error)
-    if (!responseCode) {
+    const startTime = Date.now();
+    let responseCode: number | null = null;
+    let responseBody = '';
+
+    try {
+      const response = await fetch(entry.vault.targetUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-HookVault-Delivery': 'true',
+          'X-HookVault-Id': entry.idempotency,
+          'X-HookVault-Attempt': String(attemptNum),
+          [SIGNATURE_HEADER]: signature,
+        },
+        body: rawBody,
+      });
+
+      responseCode = response.status;
+      responseBody = await response
+        .text()
+        .catch(() => 'Unreadable response body');
       const latencyMs = Date.now() - startTime;
+
       await prisma.deliveryAttempt.create({
         data: {
-          webhookId: entryId,
-          attemptNum: job.attemptsMade + 1,
-          responseCode: 0,
-          responseBody: error.message,
-          latencyMs
-        }
+          webhookId: entry.id,
+          attemptNum,
+          responseCode,
+          responseBody: responseBody.slice(0, 1000),
+          latencyMs,
+        },
       });
-    }
-    
-    // Re-throw to trigger BullMQ retry
-    throw error;
-  }
-}, { connection: redis });
 
-// Handle Job Failure (Moves to DLQ after max retries)
+      if (!response.ok) {
+        throw new Error(`Target returned status ${responseCode}`);
+      }
+
+      // Success.
+      await prisma.webhookEntry.update({
+        where: { id: entry.id },
+        data: { status: 'SUCCESS' },
+      });
+      await publishWebhookEvent({
+        userId: entry.vault.userId,
+        type: 'status',
+        entry: { id: entry.id, vaultId: entry.vaultId, status: 'SUCCESS' },
+      });
+    } catch (error) {
+      // Network-level failure (no HTTP response): log a synthetic attempt.
+      if (responseCode === null) {
+        const latencyMs = Date.now() - startTime;
+        await prisma.deliveryAttempt.create({
+          data: {
+            webhookId: entry.id,
+            attemptNum,
+            responseCode: 0,
+            responseBody:
+              error instanceof Error ? error.message : 'Unknown error',
+            latencyMs,
+          },
+        });
+      }
+      // Re-throw so BullMQ schedules a retry (or fires `failed` if exhausted).
+      throw error;
+    }
+  },
+  { connection: redis, concurrency: 10 },
+);
+
+// Transition status on each failure: RETRYING while attempts remain, DLQ once
+// exhausted.
 worker.on('failed', async (job, err) => {
-  if (job && job.attemptsMade >= job.opts.attempts!) {
-    const { entryId, vaultId } = job.data;
-    
-    // Update DB status to DLQ
-    await prisma.webhookEntry.update({
-      where: { id: entryId },
-      data: { status: 'DLQ' }
+  if (!job) return;
+  const { entryId, vaultId } = job.data;
+  const maxAttempts = job.opts.attempts ?? 1;
+
+  try {
+    const owner = await prisma.vault.findUnique({
+      where: { id: vaultId },
+      select: { userId: true },
     });
 
-    // Trigger Alert
-    await sendAlert(entryId, vaultId);
+    if (job.attemptsMade >= maxAttempts) {
+      await prisma.webhookEntry.update({
+        where: { id: entryId },
+        data: { status: 'DLQ' },
+      });
+      await logVaultActivity(vaultId, 'TRAFFIC_SPIKE', 'System', {
+        event: 'DLQ',
+        entryId,
+        error: err?.message,
+      }).catch(() => undefined);
+      await sendAlert(entryId, vaultId);
+      if (owner) {
+        await publishWebhookEvent({
+          userId: owner.userId,
+          type: 'status',
+          entry: { id: entryId, vaultId, status: 'DLQ' },
+        });
+      }
+    } else {
+      await prisma.webhookEntry.update({
+        where: { id: entryId },
+        data: { status: 'RETRYING' },
+      });
+      if (owner) {
+        await publishWebhookEvent({
+          userId: owner.userId,
+          type: 'status',
+          entry: { id: entryId, vaultId, status: 'RETRYING' },
+        });
+      }
+    }
+  } catch (e) {
+    console.error('Failed to update entry status after job failure:', e);
   }
 });
 
-console.log('HookVault Worker started listening on queue: webhooks');
+worker.on('error', (err) => {
+  console.error('Worker error:', err);
+});
+
+console.log('HookVault worker started, listening on queue: webhooks');

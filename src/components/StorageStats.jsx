@@ -1,8 +1,17 @@
 import React from 'react';
+import { useQuery } from '@tanstack/react-query';
 import SafeIcon from '../common/SafeIcon';
 import * as FiIcons from 'react-icons/fi';
+import { getStats } from '../lib/api';
 
 const { FiDatabase, FiActivity, FiTrendingUp, FiHardDrive } = FiIcons;
+
+const formatCount = (n) => {
+  if (n == null) return '—';
+  if (n >= 1000000) return `${(n / 1000000).toFixed(1)}M`;
+  if (n >= 1000) return `${(n / 1000).toFixed(1)}k`;
+  return String(n);
+};
 
 const StatCard = ({ title, value, detail, icon: Icon, color }) => (
   <div className="bg-slate-900/50 border border-slate-800 p-6 rounded-xl">
@@ -19,6 +28,14 @@ const StatCard = ({ title, value, detail, icon: Icon, color }) => (
 );
 
 export default function StorageStats() {
+  const { data: stats } = useQuery({ queryKey: ['stats'], queryFn: getStats });
+
+  const totalIngested = stats ? formatCount(stats.totalIngested) : '—';
+  const avgLatency = stats ? `${stats.avgLatencyMs}ms` : '—';
+  const successRate =
+    stats != null ? `${(stats.successRate * 100).toFixed(1)}%` : '—';
+  const dlqCount = stats?.statusBreakdown?.DLQ ?? 0;
+
   return (
     <div className="flex-1 p-8 bg-[#0A0A0B] overflow-auto">
       <div className="max-w-5xl mx-auto">
@@ -27,29 +44,29 @@ export default function StorageStats() {
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
           <StatCard 
             title="Total Ingested" 
-            value="1.2M" 
-            detail="↑ 12% from last week" 
+            value={totalIngested} 
+            detail={stats?.isMock ? 'Demo data' : 'All-time events'} 
             icon={FiDatabase} 
             color="text-indigo-400" 
           />
           <StatCard 
             title="Avg. Latency" 
-            value="142ms" 
-            detail="P95: 310ms" 
+            value={avgLatency} 
+            detail="Across delivery attempts" 
             icon={FiActivity} 
             color="text-emerald-400" 
           />
           <StatCard 
             title="Success Rate" 
-            value="99.9%" 
-            detail="24h rolling average" 
+            value={successRate} 
+            detail="Delivered / total" 
             icon={FiTrendingUp} 
             color="text-blue-400" 
           />
           <StatCard 
-            title="Disk Usage" 
-            value="14.2 GB" 
-            detail="of 100 GB allocated" 
+            title="In DLQ" 
+            value={formatCount(dlqCount)} 
+            detail="Needs manual replay" 
             icon={FiHardDrive} 
             color="text-amber-400" 
           />

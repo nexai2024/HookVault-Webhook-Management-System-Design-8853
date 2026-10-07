@@ -1,20 +1,37 @@
 import React, { useState } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import JsonViewer from './ui/JsonViewer';
 import SafeIcon from '../common/SafeIcon';
 import * as FiIcons from 'react-icons/fi';
 import { formatDistanceToNow } from 'date-fns';
+import { getWebhook } from '../lib/api';
 
 const { FiRotateCw, FiExternalLink, FiCode, FiList, FiCheckCircle, FiXCircle } = FiIcons;
 
-export default function WebhookDetail({ webhook, onReplay }) {
+export default function WebhookDetail({ webhookId, onReplay }) {
   const [activeTab, setActiveTab] = useState('payload');
   const [isReplaying, setIsReplaying] = useState(false);
 
-  if (!webhook) {
+  const { data: webhook, isLoading } = useQuery({
+    queryKey: ['webhook', webhookId],
+    queryFn: () => getWebhook(webhookId),
+    enabled: !!webhookId,
+  });
+
+  if (!webhookId) {
     return (
       <div className="flex-[1.5] bg-[#0A0A0B] flex flex-col items-center justify-center text-slate-500">
         <SafeIcon icon={FiCode} className="text-4xl mb-4 opacity-20" />
         <p>Select a webhook event to view details</p>
+      </div>
+    );
+  }
+
+  if (isLoading || !webhook) {
+    return (
+      <div className="flex-[1.5] bg-[#0A0A0B] flex flex-col items-center justify-center text-slate-500">
+        <SafeIcon icon={FiRotateCw} className="text-4xl mb-4 opacity-20 animate-spin" />
+        <p>Loading event…</p>
       </div>
     );
   }
@@ -92,7 +109,7 @@ export default function WebhookDetail({ webhook, onReplay }) {
           <div className="space-y-6">
             <div className="flex items-center justify-between">
               <h3 className="text-sm font-medium text-slate-400 uppercase tracking-wider">Delivery History</h3>
-              <span className="text-xs text-slate-500">Target: <span className="text-slate-300 font-mono">https://api.userapp.com/webhooks</span></span>
+              <span className="text-xs text-slate-500">Target: <span className="text-slate-300 font-mono">{webhook.vault?.targetUrl || '—'}</span></span>
             </div>
             
             <div className="space-y-3">

@@ -1,37 +1,34 @@
 /**
- * Vault Activity / Audit Log API
- * Path: app/api/vaults/[id]/activity/route.ts
+ * Vault audit-log API.
+ *   GET /api/vaults/[id]/activity - recent activity for a vault owned by caller
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
+import { authenticate } from '@/lib/auth';
 
 export async function GET(
   req: NextRequest,
-  { params }: { params: { id: string } }
+  { params }: { params: { id: string } },
 ) {
-  try {
-    const activity = await prisma.$queryRaw`
-      SELECT * FROM vault_activity_20240521 
-      WHERE vault_id = ${params.id} 
-      ORDER BY created_at DESC 
-      LIMIT 50
-    `;
-    
-    return NextResponse.json(activity);
-  } catch (error) {
-    return NextResponse.json({ error: 'Failed to fetch activity' }, { status: 500 });
+  const auth = await authenticate(req);
+  if (!auth) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
-}
 
-// Utility function to log activity (Internal use)
-export async function logVaultActivity(
-  vaultId: string, 
-  action: string, 
-  actorEmail: string, 
-  metadata: any
-) {
-  await prisma.$executeRaw`
-    INSERT INTO vault_activity_20240521 (vault_id, action, actor_email, metadata)
-    VALUES (${vaultId}, ${action}, ${actorEmail}, ${metadata})
-  `;
+  // Ownership check.
+  const vault = await prisma.vault.findUnique({
+    where: { id: params.id },
+    select: { userId: true },
+  });
+  if (!vault || vault.userId !== auth.user.id) {
+    return NextResponse.json({ error: 'Vault not found' }, { status: 404 });
+  }
+
+  const activity = await prisma.vaultActivity.findMany({
+    where: { vaultId: params.id },
+    orderBy: { createdAt: 'desc' },
+    take: 50,
+  });
+
+  return NextResponse.json(activity);
 }

@@ -1,4 +1,4 @@
-// This is your Prisma schema file for HookVault
+// Canonical Prisma schema for HookVault (single source of truth)
 // Learn more: https://pris.ly/d/prisma-schema
 
 generator client {
@@ -10,34 +10,83 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+// ---------------------------------------------------------------------------
+// Tenancy
+// ---------------------------------------------------------------------------
+
+model User {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  name      String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  vaults  Vault[]
+  apiKeys ApiKey[]
+}
+
+// API keys authenticate programmatic access to the management API.
+// We never store the raw key - only a SHA-256 hash. The plaintext key is
+// shown to the user exactly once, at creation time.
+model ApiKey {
+  id         String    @id @default(cuid())
+  userId     String
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name       String
+  hashedKey  String    @unique // sha256(rawKey)
+  prefix     String // first chars of the key, for display + fast lookup
+  lastUsedAt DateTime?
+  revokedAt  DateTime?
+  createdAt  DateTime  @default(now())
+
+  @@index([userId])
+  @@index([prefix])
+}
+
+// ---------------------------------------------------------------------------
+// Core domain
+// ---------------------------------------------------------------------------
+
 model Vault {
-  id          String         @id @default(cuid())
-  name        String
-  targetUrl   String         // User's destination URL
-  secret      String         // For verifying payload origin if needed
-  createdAt   DateTime       @default(now())
-  updatedAt   DateTime       @updatedAt
-  webhooks    WebhookEntry[]
+  id        String      @id @default(cuid())
+  userId    String
+  user      User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name      String
+  targetUrl String // The customer's destination URL we deliver to
+  secret    String // HMAC signing secret used for outbound delivery signatures
+  status    VaultStatus @default(ACTIVE)
+  createdAt DateTime    @default(now())
+  updatedAt DateTime    @updatedAt
+
+  webhooks   WebhookEntry[]
+  activities VaultActivity[]
+
+  @@index([userId])
 }
 
 model WebhookEntry {
-  id          String            @id @default(cuid())
+  id          String         @id @default(cuid())
   vaultId     String
-  vault       Vault             @relation(fields: [vaultId], references: [id])
-  idempotency String            @unique // X-HookVault-ID
+  vault       Vault          @relation(fields: [vaultId], references: [id], onDelete: Cascade)
+  idempotency String         @unique // X-HookVault-ID (dedupes ingestion)
+  source      String         @default("unknown") // stripe | github | shopify | custom | ...
+  method      String         @default("POST")
   payload     Json
   headers     Json
-  status      DeliveryStatus    @default(PENDING)
-  createdAt   DateTime          @default(now())
-  attempts    DeliveryAttempt[]
+  status      DeliveryStatus @default(PENDING)
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+
+  attempts DeliveryAttempt[]
 
   @@index([vaultId, status])
+  @@index([vaultId, createdAt])
 }
 
 model DeliveryAttempt {
   id           String       @id @default(cuid())
   webhookId    String
-  webhook      WebhookEntry @relation(fields: [webhookId], references: [id])
+  webhook      WebhookEntry @relation(fields: [webhookId], references: [id], onDelete: Cascade)
   attemptNum   Int
   responseCode Int?
   responseBody String?
@@ -47,8 +96,28 @@ model DeliveryAttempt {
   @@index([webhookId])
 }
 
+// Audit log for vault configuration changes (replaces the raw-SQL
+// vault_activity_* Supabase table used by the old reference code).
+model VaultActivity {
+  id         String   @id @default(cuid())
+  vaultId    String
+  vault      Vault    @relation(fields: [vaultId], references: [id], onDelete: Cascade)
+  action     String // CONFIG_UPDATE | SECRET_ROTATED | STATUS_CHANGED | TRAFFIC_SPIKE | ...
+  actorEmail String
+  metadata   Json     @default("{}") // { from, to } before/after states
+  createdAt  DateTime @default(now())
+
+  @@index([vaultId, createdAt])
+}
+
+enum VaultStatus {
+  ACTIVE
+  PAUSED
+}
+
 enum DeliveryStatus {
   PENDING
+  RETRYING
   SUCCESS
   FAILED
   DLQ

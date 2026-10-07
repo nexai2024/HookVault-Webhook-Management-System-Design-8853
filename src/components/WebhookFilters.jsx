@@ -4,7 +4,7 @@ import * as FiIcons from 'react-icons/fi';
 
 const { FiSearch, FiFilter, FiX } = FiIcons;
 
-export default function WebhookFilters({ filters, setFilters, sources, methods }) {
+export default function WebhookFilters({ filters, setFilters, sources = [], methods = [] }) {
   const hasActiveFilters = filters.search || filters.status || filters.source || filters.method;
 
   const clearFilters = () => {
@@ -36,7 +36,7 @@ export default function WebhookFilters({ filters, setFilters, sources, methods }
           <option value="SUCCESS">Success</option>
           <option value="FAILED">Failed</option>
           <option value="PENDING">Pending</option>
-          <option value="RETRIYING">Retrying</option>
+          <option value="RETRYING">Retrying</option>
         </select>
 
         <select
@@ -46,6 +46,15 @@ export default function WebhookFilters({ filters, setFilters, sources, methods }
         >
           <option value="">All Sources</option>
           {sources.map(s => <option key={s} value={s}>{s}</option>)}
+        </select>
+
+        <select
+          value={filters.method}
+          onChange={(e) => setFilters({ ...filters, method: e.target.value })}
+          className="bg-slate-800 border border-slate-700 text-[10px] text-slate-300 rounded px-2 py-1 outline-none hover:border-slate-600"
+        >
+          <option value="">All Methods</option>
+          {methods.map(m => <option key={m} value={m}>{m}</option>)}
         </select>
 
         {hasActiveFilters && (

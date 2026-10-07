@@ -1,5 +1,5 @@
 export const generateMockWebhooks = (count = 20) => {
-  const statuses = ['SUCCESS', 'FAILED', 'PENDING', 'RETRIYING'];
+  const statuses = ['SUCCESS', 'FAILED', 'PENDING', 'RETRYING'];
   const methods = ['POST', 'PUT', 'PATCH', 'DELETE'];
   const sources = ['stripe', 'github', 'shopify', 'custom'];
 

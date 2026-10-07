@@ -12,7 +12,7 @@ const StatusIcon = ({ status }) => {
     case 'SUCCESS': return <SafeIcon icon={FiCheckCircle} className="text-emerald-500" />;
     case 'FAILED': return <SafeIcon icon={FiXCircle} className="text-rose-500" />;
     case 'PENDING': return <SafeIcon icon={FiClock} className="text-amber-500" />;
-    case 'RETRIYING': return <SafeIcon icon={FiRefreshCw} className="text-blue-500 animate-spin" />;
+    case 'RETRYING': return <SafeIcon icon={FiRefreshCw} className="text-blue-500 animate-spin" />;
     default: return <SafeIcon icon={FiClock} className="text-slate-500" />;
   }
 };
@@ -22,7 +22,7 @@ const StatusBadge = ({ status }) => {
     SUCCESS: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20',
     FAILED: 'bg-rose-500/10 text-rose-400 border-rose-500/20',
     PENDING: 'bg-amber-500/10 text-amber-400 border-amber-500/20',
-    RETRIYING: 'bg-blue-500/10 text-blue-400 border-blue-500/20',
+    RETRYING: 'bg-blue-500/10 text-blue-400 border-blue-500/20',
   };
   return (
     <span className={cn("px-2.5 py-0.5 rounded-full text-xs font-medium border", styles[status])}>
@@ -31,19 +31,19 @@ const StatusBadge = ({ status }) => {
   );
 };
 
-export default function WebhookFeed({ webhooks, selectedId, onSelect, filters, setFilters }) {
-  const sources = [...new Set(webhooks.map(h => h.source))];
-  
+export default function WebhookFeed({ webhooks, selectedId, onSelect, filters, setFilters, sources = [], methods = [], isLoading = false, isLive = true, liveLabel = 'Listening' }) {
   return (
     <div className="flex-1 border-r border-slate-800 bg-slate-900/50 flex flex-col h-full overflow-hidden">
       <div className="p-4 border-b border-slate-800 flex justify-between items-center bg-slate-900">
         <h2 className="text-lg font-semibold text-white">Live Ingestion</h2>
         <div className="flex items-center gap-2">
           <span className="relative flex h-2.5 w-2.5">
-            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-            <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-emerald-500"></span>
+            {isLive && (
+              <span className={cn("animate-ping absolute inline-flex h-full w-full rounded-full opacity-75", "bg-emerald-400")}></span>
+            )}
+            <span className={cn("relative inline-flex rounded-full h-2.5 w-2.5", isLive ? "bg-emerald-500" : "bg-amber-500")}></span>
           </span>
-          <span className="text-xs text-slate-400 font-medium tracking-wide border border-slate-800 px-2 py-1 rounded-md bg-slate-800/50">Listening</span>
+          <span className="text-xs text-slate-400 font-medium tracking-wide border border-slate-800 px-2 py-1 rounded-md bg-slate-800/50">{liveLabel}</span>
         </div>
       </div>
 
@@ -51,10 +51,15 @@ export default function WebhookFeed({ webhooks, selectedId, onSelect, filters, s
         filters={filters} 
         setFilters={setFilters} 
         sources={sources}
+        methods={methods}
       />
 
       <div className="flex-1 overflow-y-auto overflow-x-hidden">
-        {webhooks.length > 0 ? (
+        {isLoading && webhooks.length === 0 ? (
+          <div className="p-8 text-center text-slate-500">
+            <p className="text-sm">Loading events…</p>
+          </div>
+        ) : webhooks.length > 0 ? (
           webhooks.map((hook) => (
             <div
               key={hook.id}

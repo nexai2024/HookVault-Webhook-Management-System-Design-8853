@@ -1,19 +1,56 @@
 import React, { useState } from 'react';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import SafeIcon from '../common/SafeIcon';
 import * as FiIcons from 'react-icons/fi';
 import { formatDistanceToNow } from 'date-fns';
 import DebugReplayModal from './DebugReplayModal';
+import { listWebhooks, replayWebhooks, purgeDlq } from '../lib/api';
 
 const { FiAlertTriangle, FiRotateCw, FiTrash2, FiTerminal, FiSearch } = FiIcons;
 
-export default function DeadLetterQueue({ webhooks, onReplay }) {
+export default function DeadLetterQueue({ onReplay }) {
   const [debugHook, setDebugHook] = useState(null);
   const [searchQuery, setSearchQuery] = useState('');
-  
-  const dlqItems = webhooks.filter(h => 
-    (h.status === 'FAILED' || h.status === 'DLQ') &&
-    (h.id.toLowerCase().includes(searchQuery.toLowerCase()) || h.source.toLowerCase().includes(searchQuery.toLowerCase()))
-  );
+  const queryClient = useQueryClient();
+
+  const { data: items = [], isLoading } = useQuery({
+    queryKey: ['webhooks', { status: 'DLQ,FAILED' }],
+    queryFn: () => listWebhooks({ status: 'DLQ,FAILED' }),
+    refetchInterval: 8000,
+  });
+
+  const replayMutation = useMutation({
+    mutationFn: (ids) => replayWebhooks(ids),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['webhooks'] }),
+  });
+
+  const purgeMutation = useMutation({
+    mutationFn: () => purgeDlq(),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['webhooks'] }),
+  });
+
+  const dlqItems = items.filter((h) => {
+    const q = searchQuery.toLowerCase();
+    return (
+      h.id.toLowerCase().includes(q) ||
+      (h.source || '').toLowerCase().includes(q)
+    );
+  });
+
+  const handleReplayOne = (id) =>
+    onReplay ? onReplay(id) : replayMutation.mutate([id]);
+
+  const handleBulkReplay = () => {
+    if (dlqItems.length === 0) return;
+    replayMutation.mutate(dlqItems.map((i) => i.id));
+  };
+
+  const handlePurge = () => {
+    if (dlqItems.length === 0) return;
+    if (window.confirm('Permanently delete all failed/DLQ entries?')) {
+      purgeMutation.mutate();
+    }
+  };
 
   return (
     <div className="flex-1 p-10 bg-[#0A0A0B] overflow-auto h-full">
@@ -33,14 +70,15 @@ export default function DeadLetterQueue({ webhooks, onReplay }) {
             </p>
           </div>
           <div className="flex gap-4">
-            <button className="text-slate-400 hover:text-white px-5 py-3 text-sm font-bold flex items-center gap-2 border border-slate-800 rounded-xl hover:bg-slate-900 transition-all">
-              <SafeIcon icon={FiTrash2} /> Purge Queue
+            <button onClick={handlePurge} disabled={purgeMutation.isPending} className="text-slate-400 hover:text-white px-5 py-3 text-sm font-bold flex items-center gap-2 border border-slate-800 rounded-xl hover:bg-slate-900 transition-all disabled:opacity-50">
+              <SafeIcon icon={FiTrash2} /> {purgeMutation.isPending ? 'Purging…' : 'Purge Queue'}
             </button>
             <button 
-              onClick={() => dlqItems.forEach(i => onReplay(i.id))} 
-              className="bg-rose-600 hover:bg-rose-500 text-white px-6 py-3 rounded-xl flex items-center gap-2 text-sm font-bold transition-all shadow-lg shadow-rose-900/20"
+              onClick={handleBulkReplay} 
+              disabled={replayMutation.isPending}
+              className="bg-rose-600 hover:bg-rose-500 text-white px-6 py-3 rounded-xl flex items-center gap-2 text-sm font-bold transition-all shadow-lg shadow-rose-900/20 disabled:opacity-50"
             >
-              <SafeIcon icon={FiRotateCw} /> Bulk Replay
+              <SafeIcon icon={FiRotateCw} /> {replayMutation.isPending ? 'Replaying…' : 'Bulk Replay'}
             </button>
           </div>
         </div>
@@ -76,7 +114,12 @@ export default function DeadLetterQueue({ webhooks, onReplay }) {
                   </td>
                   <td className="px-8 py-5">
                     <div className="flex items-center gap-2.5 text-rose-400 text-xs font-bold">
-                      <SafeIcon icon={FiAlertTriangle} /> 503 SERVICE_UNAVAILABLE
+                      <SafeIcon icon={FiAlertTriangle} />
+                      {item.attempts?.[0]?.responseCode
+                        ? `${item.attempts[0].responseCode} ${item.status === 'DLQ' ? 'DLQ' : 'FAILED'}`
+                        : item.status === 'DLQ'
+                          ? 'MAX RETRIES EXCEEDED'
+                          : 'DELIVERY FAILED'}
                     </div>
                   </td>
                   <td className="px-8 py-5 text-xs text-slate-500">
@@ -91,7 +134,7 @@ export default function DeadLetterQueue({ webhooks, onReplay }) {
                         <SafeIcon icon={FiTerminal} /> Debug Trace
                       </button>
                       <button 
-                        onClick={() => onReplay(item.id)}
+                        onClick={() => handleReplayOne(item.id)}
                         className="flex items-center gap-2 px-3 py-1.5 bg-indigo-500/10 text-indigo-400 hover:bg-indigo-500/20 border border-indigo-500/20 rounded-lg text-[10px] font-bold uppercase transition-all"
                       >
                         <SafeIcon icon={FiRotateCw} /> Replay
@@ -103,7 +146,7 @@ export default function DeadLetterQueue({ webhooks, onReplay }) {
               {dlqItems.length === 0 && (
                 <tr>
                   <td colSpan="5" className="px-8 py-20 text-center text-slate-600 italic">
-                    The Dead Letter Queue is currently empty.
+                    {isLoading ? 'Loading failed events…' : 'The Dead Letter Queue is currently empty.'}
                   </td>
                 </tr>
               )}

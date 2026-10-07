@@ -1,38 +1,53 @@
 import React, { useState } from 'react';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import SafeIcon from '../common/SafeIcon';
 import * as FiIcons from 'react-icons/fi';
 import VaultActivity from './VaultActivity';
 import VaultForm from './VaultForm';
 import VaultDetail from './VaultDetail';
+import { listVaults, createVault, deleteVault } from '../lib/api';
 
 const { FiPlus, FiLink, FiShield, FiMoreVertical, FiCopy, FiClock, FiActivity } = FiIcons;
 
 export default function Vaults() {
-  const [selectedVault, setSelectedVault] = useState(null);
+  const [selectedVaultId, setSelectedVaultId] = useState(null);
   const [showForm, setShowForm] = useState(false);
   const [showHistoryId, setShowHistoryId] = useState(null);
-  const [vaults, setVaults] = useState([
-    { id: 'vlt_stripe_live', name: 'Production Stripe', url: 'https://api.myapp.com/webhooks/stripe', status: 'Active', created: '2 days ago' },
-    { id: 'vlt_github_prod', name: 'GitHub Actions', url: 'https://ci.myapp.com/hooks/gh', status: 'Active', created: '5 days ago' },
-    { id: 'vlt_shopify_sync', name: 'Shopify Sync', url: 'https://sync.myapp.com/shopify', status: 'Paused', created: '1 month ago' },
-  ]);
+  const queryClient = useQueryClient();
 
-  const handleCreateVault = (newVault) => {
-    setVaults([newVault, ...vaults]);
-    setShowForm(false);
-  };
+  const { data: vaults = [], isLoading } = useQuery({
+    queryKey: ['vaults'],
+    queryFn: listVaults,
+  });
 
-  const handleUpdateVault = (updated) => {
-    setVaults(vaults.map(v => v.id === updated.id ? updated : v));
-    setSelectedVault(updated);
+  const createMutation = useMutation({
+    mutationFn: createVault,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['vaults'] });
+      setShowForm(false);
+    },
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: deleteVault,
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['vaults'] }),
+  });
+
+  const selectedVault = vaults.find((v) => v.id === selectedVaultId) || null;
+
+  const handleCreateVault = (newVault) => createMutation.mutate(newVault);
+
+  const handleDeleteVault = (id) => {
+    if (window.confirm('Delete this vault? This removes its webhooks and history.')) {
+      deleteMutation.mutate(id);
+    }
   };
 
   if (selectedVault) {
     return (
-      <VaultDetail 
-        vault={selectedVault} 
-        onBack={() => setSelectedVault(null)} 
-        onUpdate={handleUpdateVault}
+      <VaultDetail
+        vault={selectedVault}
+        onBack={() => setSelectedVaultId(null)}
       />
     );
   }
@@ -53,6 +68,15 @@ export default function Vaults() {
               <SafeIcon icon={FiPlus} /> Create New Vault
             </button>
           </div>
+
+          {isLoading && (
+            <div className="text-center text-slate-500 py-20 text-sm">Loading vaults…</div>
+          )}
+          {!isLoading && vaults.length === 0 && (
+            <div className="text-center text-slate-600 py-20 text-sm italic border border-slate-800/60 rounded-2xl">
+              No vaults yet. Create your first vault to start capturing webhooks.
+            </div>
+          )}
 
           <div className="grid gap-6">
             {vaults.map((vault) => (
@@ -87,7 +111,11 @@ export default function Vaults() {
                         {[1,2,3,4,5].map(i => <div key={i} className="w-1 h-3 rounded-full bg-emerald-500/50"></div>)}
                       </div>
                     </div>
-                    <button className="text-slate-600 hover:text-white p-2 hover:bg-slate-800 rounded-lg transition-colors">
+                    <button
+                      onClick={() => handleDeleteVault(vault.id)}
+                      title="Delete vault"
+                      className="text-slate-600 hover:text-rose-400 p-2 hover:bg-slate-800 rounded-lg transition-colors"
+                    >
                       <SafeIcon icon={FiMoreVertical} />
                     </button>
                   </div>
@@ -115,7 +143,7 @@ export default function Vaults() {
                       <SafeIcon icon={FiClock} /> Audit History
                     </button>
                     <button 
-                      onClick={() => setSelectedVault(vault)}
+                      onClick={() => setSelectedVaultId(vault.id)}
                       className="px-5 py-2 text-xs font-bold text-indigo-400 bg-indigo-500/10 border border-indigo-500/20 hover:bg-indigo-500 hover:text-white rounded-xl transition-all shadow-lg shadow-indigo-900/10"
                     >
                       Management

@@ -1,68 +1,127 @@
 /**
- * Next.js 14 App Router - Edge Ingestion Handler
- * Path: app/api/v1/ingest/[vaultId]/route.ts
+ * Public ingestion endpoint.
+ * Path: POST /api/v1/ingest/[vaultId]
+ *
+ * This is the URL external providers (Stripe, GitHub, ...) call. It must:
+ *   1. Accept the payload quickly and durably persist it.
+ *   2. Deduplicate via an idempotency key.
+ *   3. Offload actual delivery to the background worker.
+ *   4. Respond with 202 in well under 200ms.
+ *
+ * It is intentionally NOT behind API-key auth - it is called by third parties.
  */
 import { NextRequest, NextResponse } from 'next/server';
+import type { Prisma } from '@prisma/client';
+import crypto from 'crypto';
 import { prisma } from '@/lib/prisma';
 import { webhookQueue } from '@/lib/queue';
-import crypto from 'crypto';
+import { publishWebhookEvent } from '@/lib/events';
+
+const KNOWN_SOURCES = ['stripe', 'github', 'shopify', 'slack', 'twilio'];
+
+/** Best-effort source detection from query param, header, or user-agent. */
+function detectSource(
+  req: NextRequest,
+  headers: Record<string, string>,
+): string {
+  const fromQuery = req.nextUrl.searchParams.get('source');
+  if (fromQuery) return fromQuery.toLowerCase();
+
+  const fromHeader = headers['x-hookvault-source'];
+  if (fromHeader) return fromHeader.toLowerCase();
+
+  const ua = (headers['user-agent'] || '').toLowerCase();
+  const match = KNOWN_SOURCES.find((s) => ua.includes(s));
+  return match ?? 'custom';
+}
 
 export async function POST(
   req: NextRequest,
-  { params }: { params: { vaultId: string } }
+  { params }: { params: { vaultId: string } },
 ) {
   try {
-    const vaultId = params.vaultId;
-    
-    // 1. Extract Headers & Payload
+    const { vaultId } = params;
+
+    // 1. Validate the vault exists and is accepting traffic.
+    const vault = await prisma.vault.findUnique({ where: { id: vaultId } });
+    if (!vault) {
+      return NextResponse.json({ error: 'Vault not found' }, { status: 404 });
+    }
+    if (vault.status !== 'ACTIVE') {
+      return NextResponse.json(
+        { error: 'Vault is paused' },
+        { status: 403 },
+      );
+    }
+
+    // 2. Extract headers + body.
     const headers = Object.fromEntries(req.headers.entries());
     const rawBody = await req.text();
-    let payload = {};
+    let payload: unknown;
     try {
-      payload = JSON.parse(rawBody);
+      payload = rawBody ? JSON.parse(rawBody) : {};
     } catch {
       payload = { raw: rawBody };
     }
 
-    // 2. Idempotency Check (Prevent duplicate ingestion)
+    // 3. Idempotency: dedupe repeated deliveries of the same event.
     const idempotencyKey = headers['x-hookvault-id'] || crypto.randomUUID();
+    const source = detectSource(req, headers);
 
-    // 3. Fast DB Insert (Ideally, this could also be offloaded, but needed for UI tracking)
-    // Using upsert to handle idempotency safely
-    const entry = await prisma.webhookEntry.upsert({
+    const existing = await prisma.webhookEntry.findUnique({
       where: { idempotency: idempotencyKey },
-      update: {}, // Do nothing if it exists
-      create: {
-        vaultId: vaultId,
-        idempotency: idempotencyKey,
-        payload: payload,
-        headers: headers,
-        status: 'PENDING'
-      }
+      select: { id: true },
     });
-
-    // If it already existed and wasn't just created, return early (Duplicate)
-    if (entry.createdAt < new Date(Date.now() - 1000)) {
-      return NextResponse.json({ status: 'ignored', reason: 'duplicate' }, { status: 200 });
+    if (existing) {
+      return NextResponse.json(
+        { status: 'ignored', reason: 'duplicate', id: existing.id },
+        { status: 200 },
+      );
     }
 
-    // 4. Offload to Background Worker via BullMQ
-    // We pass the DB entry ID so the worker can update its status
-    await webhookQueue.add('deliver-webhook', {
-      entryId: entry.id,
-      vaultId: vaultId,
-      payload: payload,
-      headers: headers
+    // 4. Durable insert (kept in the request path so the UI can track it).
+    const entry = await prisma.webhookEntry.create({
+      data: {
+        vaultId,
+        idempotency: idempotencyKey,
+        source,
+        method: req.method,
+        payload: payload as Prisma.InputJsonValue,
+        headers: headers as Prisma.InputJsonValue,
+        status: 'PENDING',
+      },
     });
 
-    // 5. Return <200ms Response
-    return NextResponse.json({ 
-      status: 'accepted', 
-      id: entry.id 
-    }, { status: 202 });
+    // 5. Offload delivery to the worker.
+    await webhookQueue.add('deliver-webhook', {
+      entryId: entry.id,
+      vaultId,
+    });
 
+    // 5b. Notify real-time subscribers.
+    await publishWebhookEvent({
+      userId: vault.userId,
+      type: 'received',
+      entry: {
+        id: entry.id,
+        vaultId,
+        status: entry.status,
+        source: entry.source,
+        method: entry.method,
+        createdAt: entry.createdAt.toISOString(),
+      },
+    });
+
+    // 6. Fast ack.
+    return NextResponse.json(
+      { status: 'accepted', id: entry.id },
+      { status: 202 },
+    );
   } catch (error) {
     console.error('Ingestion Error:', error);
-    return NextResponse.json({ error: 'Internal Server Error' }, { status: 500 });
+    return NextResponse.json(
+      { error: 'Internal Server Error' },
+      { status: 500 },
+    );
   }
 }
